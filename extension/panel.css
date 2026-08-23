@@ -1,0 +1,311 @@
+/* Blend with the SERP rather than sit on top of it: Google's result blocks are
+   transparent and borderless, so the panel inherits the page's colour and font
+   and marks its extent with the same hairline Google uses between blocks.
+   Body copy matches a result snippet (16px/24px). */
+#claude-overview {
+  --co-accent: #d97757;              /* identity dot only */
+  --co-line: rgba(128,128,128,.28);
+  --co-link: #1a0dab;
+  --co-active: #1a73e8;
+  display: block;
+  box-sizing: border-box;
+  font-family: Arial, sans-serif;
+  font-size: 16px;
+  line-height: 24px;
+  color: inherit;
+  background: transparent;
+  max-width: 700px;
+  margin: 0 0 26px;
+  padding: 0 0 18px;
+  border-bottom: 1px solid var(--co-line);
+  position: relative;              /* positioning context for the compare rail */
+}
+#claude-overview * { box-sizing: border-box; font-family: inherit; }
+@media (prefers-color-scheme: dark) {
+  #claude-overview { --co-link: #99c3ff; --co-active: #8ab4f8; }
+}
+
+#claude-overview .co-head {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px;
+}
+#claude-overview .co-title {
+  font-family: "Google Sans", Arial, sans-serif; font-size: 18px; line-height: 24px;
+  display: flex; align-items: center; gap: 8px; color: inherit;
+}
+#claude-overview .co-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--co-accent); flex: none;
+}
+
+/* Google's own tab treatment rather than pills: no border, no radius, just a
+   3px underline that fills in when the control is on. currentColor, not the
+   blue, so an active control reads as emphasis of the text it sits in instead
+   of a separate widget floating above the page.
+   The compare rail is deliberately excluded - it is a floating affordance on
+   the panel edge, not one of the header tabs, and keeps its pill. */
+#claude-overview .co-chip,
+#claude-overview .co-toggle,
+#claude-overview .co-menuwrap:not(.co-compare) .co-menubtn {
+  font-family: Arial, sans-serif; font-size: 12px; line-height: 18px;
+  color: inherit; opacity: .7; background: transparent;
+  border: 0; border-bottom: 3px solid transparent; border-radius: 0;
+  padding: 3px 2px; cursor: pointer;
+}
+#claude-overview .co-chip:hover,
+#claude-overview .co-toggle:hover,
+#claude-overview .co-menuwrap:not(.co-compare) .co-menubtn:hover {
+  opacity: 1; border-bottom-color: rgba(128,128,128,.4);
+}
+#claude-overview .co-close {
+  font-family: Arial, sans-serif; font-size: 12px; line-height: 18px;
+  color: inherit; opacity: .75; background: transparent;
+  border: 1px solid var(--co-line); border-radius: 999px; padding: 2px 9px; cursor: pointer;
+}
+/* Toggles carry their state in a dot rather than by filling the whole pill:
+   an outline when off, solid when on. Only the two controls that are actually
+   toggles get one — the +/history/gear chips carry no aria-pressed, so the
+   attribute selector leaves them alone. */
+#claude-overview .co-toggle,
+#claude-overview .co-chip[aria-pressed] {
+  display: inline-flex; align-items: center; gap: 6px;
+}
+#claude-overview .co-toggle::before,
+#claude-overview .co-chip[aria-pressed]::before {
+  content: ""; flex: none; width: 8px; height: 8px; border-radius: 50%;
+  border: 1.5px solid currentColor; background: transparent;
+}
+#claude-overview .co-toggle[aria-pressed="true"],
+#claude-overview .co-chip[aria-pressed="true"] {
+  opacity: 1; border-bottom-color: currentColor;
+}
+#claude-overview .co-toggle[aria-pressed="true"]::before,
+#claude-overview .co-chip[aria-pressed="true"]::before { background: currentColor; }
+#claude-overview .co-toggle { margin-left: auto; }
+#claude-overview.co-single .co-cachebar { margin-left: auto; }
+
+/* Columns are separated by a rule rather than boxed in cards. */
+#claude-overview .co-cols { display: block; }
+#claude-overview .co-cols.co-multi {
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(260px, 1fr);
+  gap: 20px; overflow-x: auto; padding-bottom: 4px;
+}
+#claude-overview .co-col { min-width: 0; }
+#claude-overview .co-cols.co-multi .co-colhead { margin-bottom: 8px; }
+#claude-overview .co-cols.co-multi .co-col {
+  display: flex; flex-direction: column;
+  padding-left: 14px; border-left: 1px solid var(--co-line);
+}
+#claude-overview .co-cols.co-multi .co-col:first-child { padding-left: 0; border-left: 0; }
+#claude-overview .co-cols.co-multi .co-body { flex: 1 1 auto; }
+#claude-overview .co-cols.co-multi .co-foot { margin-top: auto; }
+#claude-overview .co-slot { display: contents; }
+#claude-overview .co-colhead { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+#claude-overview.co-single .co-colhead { display: contents; }
+#claude-overview .co-close { margin-left: auto; font-size: 14px; line-height: 1; padding: 1px 7px; }
+
+#claude-overview .co-body {
+  white-space: pre-wrap; font-size: 16px; line-height: 24px; color: inherit;
+}
+#claude-overview .co-body strong { font-weight: 700; }
+/* Google's result links: blue, underlined only on hover. */
+#claude-overview .co-body a.co-link { color: var(--co-link); text-decoration: none; }
+#claude-overview .co-body a.co-link:hover { text-decoration: underline; }
+#claude-overview .co-body code {
+  font-family: monospace; font-size: 14px;
+  background: rgba(128,128,128,.16); padding: 1px 4px; border-radius: 4px;
+}
+#claude-overview .co-muted { opacity: .7; font-size: 14px; }
+#claude-overview .co-err { color: #d93025; font-size: 14px; white-space: pre-wrap; }
+@media (prefers-color-scheme: dark) { #claude-overview .co-err { color: #f28b82; } }
+#claude-overview .co-caret {
+  display: inline-block; width: 7px; height: 16px; vertical-align: -3px;
+  background: var(--co-accent); animation: co-blink 1s steps(2) infinite;
+}
+@keyframes co-blink { 50% { opacity: 0 } }
+
+#claude-overview .co-foot {
+  margin-top: 12px; font-size: 12px; line-height: 18px; opacity: .75;
+  display: flex; gap: 12px; flex-wrap: wrap; align-items: center;
+}
+/* Google uses plain text buttons in link blue, not filled pills. */
+#claude-overview .co-run {
+  font-family: Arial, sans-serif; font-size: 13px; cursor: pointer;
+  color: var(--co-link); background: transparent; border: 0; padding: 0;
+}
+#claude-overview .co-run:hover { text-decoration: underline; }
+
+/* Model + effort picker. Anchored to its own wrapper so it opens under the
+   button wherever the header wraps to. The panel is transparent chrome, but
+   this popup is a surface that floats over result text, so it is the one place
+   that gets an opaque background and a shadow. */
+#claude-overview .co-menuwrap { position: relative; display: inline-flex; }
+#claude-overview .co-menubtn {
+  display: inline-flex; align-items: center; gap: 5px; white-space: nowrap;
+}
+#claude-overview .co-menucaret { font-size: 9px; opacity: .7; }
+#claude-overview .co-menuwrap:not(.co-compare).co-menuopen .co-menubtn {
+  opacity: 1; border-bottom-color: currentColor;
+}
+/* The rail is a floating control, so it keeps the pill it always had. */
+#claude-overview .co-compare .co-menubtn {
+  border: 1px solid var(--co-line); border-radius: 999px;
+  color: inherit; opacity: .75; background: transparent; cursor: pointer;
+}
+#claude-overview .co-compare .co-menubtn:hover,
+#claude-overview .co-compare.co-menuopen .co-menubtn { opacity: 1; }
+#claude-overview .co-menu {
+  display: none; position: absolute; top: calc(100% + 6px); left: 0; z-index: 60;
+  background: #fff; color: #202124;
+  border: 1px solid var(--co-line); border-radius: 12px;
+  box-shadow: 0 6px 24px rgba(0,0,0,.18); padding: 6px;
+  grid-template-columns: max-content max-content;
+}
+@media (prefers-color-scheme: dark) {
+  #claude-overview .co-menu { background: #2a2c33; color: #e8e8e8; box-shadow: 0 6px 24px rgba(0,0,0,.5); }
+}
+#claude-overview .co-menuwrap.co-menuopen .co-menu { display: grid; }
+#claude-overview .co-menucol { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+#claude-overview .co-menuefforts {
+  padding-left: 6px; margin-left: 6px; border-left: 1px solid var(--co-line);
+}
+#claude-overview .co-menuhead {
+  font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+  opacity: .55; padding: 4px 8px 5px;
+}
+/* Flex, not grid: a grid row let the label column shrink and clipped "Max"
+   to "M..". Here the label keeps its intrinsic width and the note is pushed
+   to the right edge. */
+#claude-overview .co-menuitem {
+  display: flex; align-items: center; gap: 8px;
+  width: 100%; text-align: left; font-family: Arial, sans-serif; font-size: 13px;
+  line-height: 20px; color: inherit; background: transparent; border: 0;
+  border-radius: 8px; padding: 6px 10px 6px 6px; cursor: pointer;
+}
+/* Hover and keyboard focus are the same state — the right column follows
+   whichever one is active, so they must not look different. */
+#claude-overview .co-menuitem:hover,
+#claude-overview .co-menuitem:focus,
+#claude-overview .co-menumodel.co-menuhot { background: rgba(128,128,128,.16); outline: none; }
+#claude-overview .co-menuitem:focus-visible { box-shadow: inset 0 0 0 2px var(--co-active); }
+#claude-overview .co-menucheck { flex: none; width: 14px; text-align: center; opacity: 0; font-size: 11px; }
+#claude-overview .co-menuitem.co-menuon .co-menucheck { opacity: 1; color: var(--co-active); }
+#claude-overview .co-menuitem.co-menuon .co-menucheck::before { content: "¹3"; }
+#claude-overview .co-menutext { flex: none; white-space: nowrap; }
+#claude-overview .co-menueffort .co-menutext { text-transform: capitalize; }
+#claude-overview .co-menunote { margin-left: auto; padding-left: 10px; font-size: 11px; opacity: .55; white-space: nowrap; }
+#claude-overview .co-menuempty { font-size: 12px; opacity: .6; padding: 2px 8px 6px; max-width: 200px; line-height: 17px; }
+
+/* Compare rail: a vertical pill on the panel's right edge, hidden until the
+   overview is hovered so the resting state stays pure content. It also has to
+   appear on keyboard focus (focus-within) or it would be unreachable without a
+   pointer, and stay up while its own menu is open. */
+/* A full-height strip, not just the pill. The pill alone was 74px tall and sat
+   outside the panel's border box, so approaching it from any other height took
+   the pointer through dead space: the panel stopped matching :hover and the
+   pill faded out from under the cursor. The strip is a DOM child of the panel,
+   and :hover propagates up the tree rather than by geometry, so entering it
+   anywhere keeps the panel hovered. It overlaps the panel's right margin by
+   8px so there is no gap to cross, and keeps pointer-events: none while hidden
+   so it never eats a click on the page behind it. */
+#claude-overview .co-compare {
+  position: absolute; top: 0; bottom: 0; right: -22px; width: 30px;
+  display: flex; align-items: center; justify-content: flex-end;
+  opacity: 0; pointer-events: none; transition: opacity .12s ease;
+}
+#claude-overview:hover .co-compare,
+#claude-overview:focus-within .co-compare,
+#claude-overview .co-compare.co-menuopen { opacity: 1; pointer-events: auto; }
+#claude-overview .co-compare .co-menubtn {
+  width: 20px; height: 74px; padding: 0; border-radius: 999px;
+  display: flex; align-items: center; justify-content: center;
+}
+#claude-overview .co-menuglyph { font-size: 13px; line-height: 1; }
+/* Anchored to the rail, so it opens inward instead of off the page edge. */
+#claude-overview .co-compare .co-menu { left: auto; right: calc(100% + 8px); top: 0; }
+@media (prefers-reduced-motion: reduce) {
+  #claude-overview .co-compare { transition: none; }
+}
+
+/* Conversation. Indented behind a hairline so the thread reads as attached to
+   the answer above it rather than as a second, competing result block. */
+#claude-overview .co-convo { margin-top: 14px; }
+#claude-overview .co-turn {
+  margin-top: 14px; padding-left: 14px; border-left: 2px solid var(--co-line);
+}
+#claude-overview .co-turnq {
+  font-size: 15px; line-height: 22px; font-weight: 700; margin-bottom: 8px;
+}
+#claude-overview .co-turna { margin-top: 2px; }
+#claude-overview .co-askform { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+#claude-overview .co-askinput {
+  flex: 1 1 auto; min-width: 0; font-family: Arial, sans-serif; font-size: 14px;
+  line-height: 22px; color: inherit; background: transparent;
+  border: 0; border-bottom: 1px solid var(--co-line); border-radius: 0; padding: 4px 2px;
+}
+#claude-overview .co-askinput:focus { outline: none; border-bottom-color: currentColor; }
+#claude-overview .co-opener { margin-top: 10px; }
+/* In compare mode the columns are narrow, so the thread gives up its indent. */
+#claude-overview .co-cols.co-multi .co-turn { padding-left: 10px; }
+#claude-overview .co-cols.co-multi .co-turnq { font-size: 14px; line-height: 20px; }
+
+#claude-overview .co-spend {
+  display: flex; align-items: center; font-size: 12px; opacity: .7;
+}
+#claude-overview .co-spendchip { white-space: nowrap; }
+
+#claude-overview .co-cachebar {
+  display: flex; gap: 6px; flex-wrap: wrap; align-items: center; font-size: 12px; opacity: .7;
+}
+#claude-overview .co-cachechip {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 1px 8px; border-radius: 999px; border: 1px solid var(--co-line);
+}
+#claude-overview .co-cachedot {
+  width: 6px; height: 6px; border-radius: 50%; background: #1e8e3e; flex: none;
+}
+#claude-overview .co-cachecold { opacity: .6; }
+
+#claude-overview .co-srcs { margin-top: 12px; }
+#claude-overview .co-pill {
+  font-family: Arial, sans-serif; font-size: 12px; color: inherit; opacity: .8; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 3px 10px 3px 6px; border-radius: 999px;
+  border: 1px solid var(--co-line); background: transparent;
+}
+#claude-overview .co-pill:hover { opacity: 1; }
+#claude-overview .co-favs { display: inline-flex; }
+#claude-overview .co-favs > * + * { margin-left: -4px; }
+#claude-overview .co-fav {
+  width: 16px; height: 16px; border-radius: 50%;
+  background: rgba(128,128,128,.2); border: 1px solid var(--co-line);
+  object-fit: cover; flex: none;
+}
+#claude-overview .co-favtxt {
+  display: inline-flex; align-items: center; justify-content: center;
+  font-size: 9px; font-weight: 700; opacity: .75;
+}
+#claude-overview .co-srclist {
+  margin-top: 8px; display: flex; flex-direction: column; gap: 2px;
+  max-height: 232px; overflow-y: auto;
+}
+#claude-overview .co-srcq { font-size: 12px; opacity: .7; margin-bottom: 6px; }
+#claude-overview a.co-src {
+  display: flex; align-items: center; gap: 8px; padding: 3px 6px; border-radius: 8px;
+  font-size: 14px; text-decoration: none; color: var(--co-link);
+}
+#claude-overview a.co-src:hover { background: rgba(128,128,128,.14); text-decoration: underline; }
+#claude-overview .co-srct { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#claude-overview .co-srch { opacity: .65; color: inherit; font-size: 12px; flex: none; }
+
+/* Soft entrance for content that appears at once (cached answers, the source
+   pill, the stats line) rather than being typed out. */
+@keyframes co-fadein {
+  from { opacity: 0; transform: translateY(2px); }
+  to   { opacity: 1; transform: none; }
+}
+#claude-overview .co-fade { animation: co-fadein .22s ease-out both; }
+/* The caret is the only motion that should survive reduced-motion, and even it
+   stops blinking. */
+@media (prefers-reduced-motion: reduce) {
+  #claude-overview .co-fade { animation: none; }
+  #claude-overview .co-caret { animation: none; opacity: .6; }
+}

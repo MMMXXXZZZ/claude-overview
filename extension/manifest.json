@@ -1,0 +1,71 @@
+{
+  "manifest_version": 3,
+  "name": "Claude Overview",
+  "version": "0.1.0",
+  "description": "Replaces Google's AI Overview with a Claude-generated answer. Blocks Google's AI Overview requests before they leave the browser.",
+  "permissions": [
+    "storage",
+    "declarativeNetRequest",
+    "scripting",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.google.com/*",
+    "https://www.google.co.uk/*",
+    "https://api.anthropic.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "scripts": [
+      "background.js"
+    ]
+  },
+  "options_page": "options.html",
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "block",
+        "enabled": true,
+        "path": "rules_block.json"
+      },
+      {
+        "id": "udm14",
+        "enabled": true,
+        "path": "rules_udm.json"
+      }
+    ]
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.google.com/search*",
+        "https://www.google.co.uk/search*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "css": [
+        "panel.css"
+      ],
+      "run_at": "document_start",
+      "all_frames": false
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "inject.js"
+      ],
+      "matches": [
+        "https://www.google.com/*",
+        "https://www.google.co.uk/*"
+      ]
+    }
+  ],
+  "browser_specific_settings": {
+    "gecko": {
+      "id": "claude-overview@local",
+      "strict_min_version": "128.0"
+    }
+  }
+}

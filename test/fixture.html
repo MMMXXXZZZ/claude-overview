@@ -1,0 +1,52 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>SERP fixture</title>
+<link rel="stylesheet" href="/extension/panel.css" />
+<style>
+  body { font-family: arial, sans-serif; margin: 0; padding: 20px 30px; }
+  #rcnt { max-width: 700px; }
+  .fake-aio {
+    border: 1px solid #dadce0; border-radius: 12px;
+    padding: 16px; margin-bottom: 24px; background: #f8f9fa;
+  }
+  .fake-aio .lbl { font-weight: 600; margin-bottom: 8px; }
+  .g { margin-bottom: 22px; }
+  .g .u { color: #202124; font-size: 13px; }
+  .g .t { color: #1a0dab; font-size: 19px; }
+</style>
+
+<!-- Mirrors the real SERP nesting measured on google.com:
+     #rcnt > #center_col > #gevUs > #search -->
+<div id="rcnt">
+  <div id="center_col">
+    <div id="taw"></div>
+    <div id="gevUs" class="eqAnXb">
+      <!-- Stand-in for Google's inline AI Overview block -->
+      <div class="fake-aio">
+        <div class="lbl" role="heading" aria-level="2">AI Overview</div>
+        <div style="min-height:120px">
+          Google's own overview would be here. If the extension works, this
+          whole block is removed from the DOM.
+        </div>
+      </div>
+
+      <div id="search">
+        <div class="g">
+          <div class="u">en.wikipedia.org › wiki › Rayleigh_scattering</div>
+          <div class="t">Rayleigh scattering - Wikipedia</div>
+          <div>Rayleigh scattering is the scattering of light by particles…</div>
+        </div>
+        <div class="g">
+          <div class="u">science.nasa.gov › blue-sky</div>
+          <div class="t">Why Is the Sky Blue? | NASA Space Place</div>
+          <div>The sky is blue because of the way sunlight interacts…</div>
+        </div>
+      </div>
+    </div>
+    <div id="botstuff"></div>
+  </div>
+</div>
+
+<script src="/test/_key.js"></script>
+<script src="/test/harness.js"></script>
+<script src="/extension/content.js"></script>

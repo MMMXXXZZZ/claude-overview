@@ -1,0 +1,34 @@
+[
+  {
+    "id": 1,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "urlFilter": "||google.com/async/aion",
+      "resourceTypes": [
+        "xmlhttprequest",
+        "other",
+        "sub_frame",
+        "script"
+      ]
+    }
+  },
+  {
+    "id": 2,
+    "priority": 1,
+    "action": {
+      "type": "block"
+    },
+    "condition": {
+      "regexFilter": "^https://www\\.google\\.[a-z.]+/.*[?&](asearch=arc|async=arc_id)",
+      "resourceTypes": [
+        "xmlhttprequest",
+        "other",
+        "sub_frame",
+        "script"
+      ]
+    }
+  }
+]

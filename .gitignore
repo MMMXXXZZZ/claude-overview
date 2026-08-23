@@ -1,0 +1,27 @@
+# Secrets — never commit
+.env
+test/_key.js
+
+# Shell crash dumps (Git Bash on Windows)
+*.stackdump
+
+# Test output
+test/shot-*.png
+test/*.tmp.js
+
+node_modules/
+
+# Personal / local-only — never commit
+.claude/
+.claude.json
+.env
+.env.*
+*_key.js
+*key.txt
+*.pem
+*.key
+secrets*
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
