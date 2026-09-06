@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Claude Overview
 // @namespace    claude-overview
-// @version      1.2.0
-// @description  Removes Google's AI Overview and replaces it with Claude (API required). Choose models, effort, etc.
+// @version      1.3.0
+// @description  Removes Google's AI Overview and replaces it with Claude (API required). Choose models, effort, and optionally answer from the page's own search results.
 // @license      MIT
 // @match        https://www.google.com/search*
 // @include      /^https:\/\/www\.google\.[a-z]{2,3}(\.[a-z]{2})?\/search[?\/]/
@@ -45,6 +45,13 @@
      when you have ALREADY granted google.com location access - coordinates
      rounded to about 110 m. The settings dialog shows the exact text before
      you enable it. This script never raises a location permission prompt.
+   - Extracts of the search results on the page, ONLY if you switch it on in
+     settings (off by default): each result as Google rendered it - title,
+     source, date, snippet, sitelinks - so Claude answers from the same
+     evidence you can see instead of guessing. Switching it on also lets Claude
+     fetch and read the pages those results point at; that fetching happens on
+     Anthropic's servers, not from your browser. The settings dialog shows the
+     exact text before you enable it.
    - The hostnames of your search results, to wsrv.nl, which proxies favicon
      images from icons.duckduckgo.com.
    Nothing is sent anywhere else. There is no tracking, no analytics, and
@@ -145,6 +152,7 @@
     search: true,
     context: false,
     udm14: true,
+    results: false,
     apiKey: "",
     // "" means "use the built-in SYSTEM below". Storing the empty string rather
     // than a copy of the default means later improvements to the default text
@@ -161,10 +169,30 @@
   const NO_EFFORT = new Set(["claude-haiku-4-5"]);
 
   const MODEL_RULES = {
-    "claude-opus-5": { effort: true, thinking: "adaptive", search: "web_search_20260209" },
-    "claude-sonnet-5": { effort: true, thinking: "adaptive", search: "web_search_20260209" },
-    "claude-fable-5": { effort: true, thinking: "omit", search: "web_search_20250305" },
-    "claude-haiku-4-5": { effort: false, thinking: "omit", search: "web_search_20250305" },
+    "claude-opus-5": {
+      effort: true,
+      thinking: "adaptive",
+      search: "web_search_20260209",
+      fetch: "web_fetch_20260209",
+    },
+    "claude-sonnet-5": {
+      effort: true,
+      thinking: "adaptive",
+      search: "web_search_20260209",
+      fetch: "web_fetch_20260209",
+    },
+    "claude-fable-5": {
+      effort: true,
+      thinking: "omit",
+      search: "web_search_20250305",
+      fetch: "web_fetch_20250910",
+    },
+    "claude-haiku-4-5": {
+      effort: false,
+      thinking: "omit",
+      search: "web_search_20250305",
+      fetch: "web_fetch_20250910",
+    },
   };
 
   /* Local spend accounting. The Usage & Cost Admin API needs an Admin API key
@@ -205,7 +233,12 @@
   const CACHE_TTL_MS = 5 * 60 * 1000;
   const HISTORY_CAP = 300; // GM value stores are smaller than extension storage
   const LEADER_TIMEOUT_MS = 30000;
-  const OFF_TEXT = "Off — no credits are being spent. Google's AI Overview stays suppressed.";
+  // Shown in manual mode. It has to say both that nothing is being spent and
+  // that the overview is still gone, because those are the two things a reader
+  // looking at an empty panel actually wonders about.
+  const OFF_TEXT =
+    "Manual \u2014 nothing is sent until you ask, and no credits are being spent. " +
+    "Google's AI Overview stays suppressed.";
 
   /* The DEFAULT system prompt. Settings exposes this text in an editable box;
      whatever is stored under "systemPrompt" replaces this whole block, and an
@@ -254,6 +287,47 @@
     "verifiable facts, and answer directly from knowledge when it does not — a",
     "definitional or conceptual query rarely needs a search. Keep searches few and",
     "targeted. Do not narrate your searching or list sources; just answer.",
+  ].join("\n");
+
+  /* Appended mechanically from the results toggle, exactly like SEARCH_NOTE, so
+     a custom system prompt can never claim page content that was not actually
+     attached.
+
+     The URL warning is load-bearing. Google renders the destination as an
+     abbreviated <cite> ("https://www.tembomoney.com > learn > spring-budget-..."),
+     and on some page variants the anchor href is an opaque /goto?url= redirect
+     rather than the destination - so a "URL" in this block is frequently not an
+     address you can navigate to. The base prompt promises never to guess a link;
+     without this, the results block would become the thing that breaks it. */
+  const RESULTS_NOTE = [
+    "",
+    "A <results> block holding extracts of the search results Google rendered on",
+    "this page may precede the query. Each entry is one result extract as it was",
+    "shown, so it may also carry a source name, a date, a comment or view count,",
+    "and sitelinks. They are extracts, not the pages themselves.",
+    "",
+    "Judge per query whether the block already answers it. Often it plainly does",
+    "- a date, a price, a score, a name, a version number, opening hours, and the",
+    "agreement of several results is itself evidence. Take it straight from the",
+    "block in that case and answer immediately; do not fetch a page to confirm",
+    "something already stated in front of you.",
+    "",
+    "Just as often it does not. A snippet is a fragment Google chose for matching",
+    "the query's words, so it can share the query's vocabulary while never",
+    "stating the fact asked for, break off mid-sentence, or answer a nearby",
+    "question instead. When the specific thing asked for is not plainly there,",
+    "treat the entries as leads rather than as the answer: fetch the URL of the",
+    "most promising one and read the page, or search for it when no URL is given.",
+    "Reading one good page beats stitching fragments into an answer none of them",
+    "actually made.",
+    "",
+    "Results also disagree with each other, and with the pages behind them. Never",
+    "repeat the list back, never summarise it result by result, and never mention",
+    "that you were given it.",
+    "An entry may begin with a line reading \"URL: \" and a full address; only",
+    "those addresses may be fetched or linked. The address shown inside a",
+    "result's own text is Google's abbreviated display form, often with an",
+    "ellipsis, and is not a real address - never reconstruct, fetch or link one.",
   ].join("\n");
 
   /* Sent as a SECOND system block on follow-up turns only. It must never be
@@ -941,6 +1015,144 @@
     };
   }
 
+  /* ---------- 4c. The page's own search results ----------
+     Sent only when the user turns it on. Like pageContext this rides in the
+     USER MESSAGE, after the cache_control breakpoint, so it never invalidates
+     the ~6.2k-token cached prefix.
+
+     Structural, not class-based - Google's SERP class names are obfuscated and
+     rotate (measured here: .zReHs / .yuRUbf / .kb0PBd). Three properties that
+     are not cosmetic do the work instead, all verified against a live SERP on
+     2026-09-06, both with and without udm=14:
+
+       - An organic result is an anchor inside #rso containing an <h3>. That is
+         the same signal overviewUnit() already trusts to avoid eating the
+         results column, so if it breaks, more than this function is broken.
+       - [data-hveid] is the result's own container: the nearest such ancestor
+         of the anchor held exactly one <h3> and the whole rendered result -
+         title, source, date or comment count, snippet, sitelinks - and no more.
+       - <cite> holds the displayed URL, or on social and video results the meta
+         line instead ("4 comments - 5 years ago").
+
+     The whole rendered text of each block is sent rather than parsed fields.
+     Google puts dates in at least two different places (an "Aug 27, 2026 - "
+     prefix on the snippet, or inside the cite meta line), and a parse that
+     tries to normalise that loses more than it gains. */
+
+  // Google does not always expose the destination: on some page variants every
+  // result href is an opaque /goto?url=CAESaQ... redirect, so no real URL is
+  // available and the <cite> text - abbreviated with an ellipsis - is all there
+  // is. Returning null rather than the redirect matters, because the system
+  // prompt permits linking any URL the model was given.
+  function resultUrl(a) {
+    const raw = a.getAttribute("href") || "";
+    if (!raw || raw.startsWith("#")) return null;
+    let u;
+    try {
+      u = new URL(a.href);
+    } catch (e) {
+      return null;
+    }
+    if (!/^https?:$/.test(u.protocol)) return null;
+    // Any google host here is a redirector (/goto, /url), not a destination.
+    if (/(^|\.)google\.[a-z.]+$/i.test(u.hostname)) return null;
+    return u.href;
+  }
+
+  // Bounds the worst case (expanded sitelinks on every result) so the feature
+  // cannot quietly multiply what a query costs. Ordinary queries measure 2-4k.
+  const RESULTS_CHAR_CAP = 12000;
+
+  function pageResults() {
+    try {
+      const root = document.querySelector("#rso") || document.querySelector("#search");
+      if (!root) return null;
+
+      const seen = new Set();
+      const entries = [];
+      for (const a of root.querySelectorAll("a")) {
+        if (!a.querySelector("h3")) continue;
+        if (a.closest("#claude-overview")) continue; // never feed the panel back
+        const block = a.closest("[data-hveid]") || a.parentElement;
+        if (!block || seen.has(block)) continue;
+        seen.add(block);
+
+        // innerText, not textContent: it reflects what was actually rendered,
+        // skipping hidden nodes and keeping Google's own line breaks.
+        let text = (block.innerText || "").replace(/\n{3,}/g, "\n\n").trim();
+        // The first result on a page also absorbs the section heading
+        // Google renders above the list ("Web results"), because that
+        // heading lives inside the same [data-hveid]. A rendered result
+        // always begins with its own title, so anything before the title
+        // is chrome rather than content.
+        const title = (block.querySelector("h3").innerText || "").trim();
+        const at = title ? text.indexOf(title) : -1;
+        if (at > 0 && at < 80) text = text.slice(at);
+        if (!text) continue;
+        const url = resultUrl(a);
+        // The URL line is added ONLY when a real destination was
+        // recoverable. Google renders the address inside the result text
+        // anyway (abbreviated, as a <cite>), so a line announcing its
+        // absence would repeat on every entry and say nothing - measured
+        // at ~700 wasted characters on an ordinary 8-result page. Which
+        // entries are linkable is exactly what its presence encodes.
+        entries.push(url ? "URL: " + url + "\n" + text : text);
+      }
+      if (!entries.length) return null;
+
+      let text = "";
+      let n = 0;
+      for (const e of entries) {
+        const next = (n ? "\n\n" : "") + "[" + (n + 1) + "]\n" + e;
+        if (text.length + next.length > RESULTS_CHAR_CAP) break;
+        text += next;
+        n++;
+      }
+      if (!n) return null;
+
+      return {
+        text: "<results>\n" + text + "\n</results>",
+        count: n,
+        chars: text.length,
+        // Keys the answer cache: a different result set must not replay an
+        // answer that was built from the previous one.
+        sig: hashStr(text),
+      };
+    } catch (e) {
+      return null; // never let a SERP layout change break the request
+    }
+  }
+
+  /* Results are rendered by Google's own scripts, so at document-start they are
+     usually not in the DOM yet. Every path except the cold auto-run - the
+     manual "Ask Claude" button, Regenerate, a follow-up - happens long after
+     load and returns on the first line without waiting at all.
+
+     The deadline is what makes this safe: a SERP that never populates #rso (a
+     layout change, a consent interstitial) has to degrade to sending no
+     results, not hang the panel with a caret blinking forever. */
+  const RESULTS_WAIT_MS = 1500;
+
+  function awaitResults() {
+    const ready = pageResults();
+    if (ready) return Promise.resolve(ready);
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        mo.disconnect();
+        resolve(pageResults());
+      };
+      const mo = new MutationObserver(() => {
+        if (pageResults()) finish();
+      });
+      mo.observe(document.documentElement, { childList: true, subtree: true });
+      const timer = setTimeout(finish, RESULTS_WAIT_MS);
+    });
+  }
+
   /* ---------- 5. Cross-tab prompt-cache gate ----------
      Without a shared background worker, tabs coordinate through the GM value
      store. A cache entry is only readable once the first response begins
@@ -952,8 +1164,13 @@
      nothing is going to read, and the leader gate would hold tabs for a write
      that already happened under the old text. Entries left behind by a previous
      prompt are never read again and expire on their own five minutes later. */
-  const prefixKey = (model, search, ph) =>
-    "cw:" + model + ":" + (search ? "s" : "n") + (ph ? ":" + ph : "");
+  /* results is part of the key for the same reason search is: RESULTS_NOTE is
+     appended to the system block, so the two variants are different cached
+     prefixes. Without it the warm chip would count down against a prefix
+     nothing is going to read, and the leader gate would hold other tabs for a
+     write that already happened under the other variant. */
+  const prefixKey = (model, search, ph, results) =>
+    "cw:" + model + ":" + (search ? "s" : "n") + (ph ? ":" + ph : "") + (results ? ":r" : "");
   const lockKey = (pk) => "lock:" + pk;
 
   async function isWarm(pk) {
@@ -1088,6 +1305,15 @@
       // dependent answer must not be replayed for a different day or place.
       const wantContext = await GM_.get("context", DEFAULTS.context);
       const ctx = wantContext ? pageContext() : null;
+      // Same reasoning, and gathered here rather than in run() so every caller
+      // - first turn, regenerate, settings re-run - goes through one path. On a
+      // follow-up it is skipped: the results rode the first turn and are
+      // already in the thread.
+      const wantResults = await GM_.get("results", DEFAULTS.results);
+      const res = wantResults && !isFollowUp ? await awaitResults() : null;
+      // awaitResults can wait up to 1.5s, which is long enough for the column
+      // to have been torn down under us.
+      if (state.aborted) return;
       // Same reasoning: read at request time, so an edit in settings applies to
       // the next question without rebuilding the columns. A blank or
       // whitespace-only stored value means "use the default".
@@ -1098,14 +1324,12 @@
       // through the thread rather than repeating it every message.
       const sentUser = isFollowUp
         ? conv.question
-        : ctx
-        ? ctx.text + "\n\n" + query
-        : query;
+        : [ctx && ctx.text, res && res.text, query].filter(Boolean).join("\n\n");
       // ph is in the answer-cache key too, or editing the prompt would replay
       // an answer the old prompt produced and the edit would look like a no-op.
       const ck = isFollowUp
         ? [model, effort, search ? "s" : "n", ph, "f", hashStr(JSON.stringify(conv.prior) + sentUser)].join("|")
-        : [model, effort, search ? "s" : "n", ph, ctx ? ctx.sig : "-", query].join("|");
+        : [model, effort, search ? "s" : "n", ph, ctx ? ctx.sig : "-", res ? res.sig : "-", query].join("|");
 
       // Regenerate sets force, so it always reaches the API — otherwise the
       // button would just re-render the cached answer and appear to do nothing.
@@ -1132,7 +1356,7 @@
         return handlers.error("No Anthropic API key set. Open settings to add one.", true);
       }
 
-      const pk = prefixKey(model, search, ph);
+      const pk = prefixKey(model, search, ph, !!res);
       let gate = null;
       if (search) {
         const held = await GM_.get(lockKey(pk), 0);
@@ -1156,7 +1380,10 @@
         system: [
           {
             type: "text",
-            text: basePrompt + (search ? SEARCH_NOTE : NO_SEARCH_NOTE),
+            text:
+              basePrompt +
+              (search ? SEARCH_NOTE : NO_SEARCH_NOTE) +
+              (res ? RESULTS_NOTE : ""),
             cache_control: { type: "ephemeral" },
           },
         ],
@@ -1180,7 +1407,23 @@
       // Relaxes the one-shot rules the base prompt imposes. Appended after the
       // cached block, so the prefix still matches and nothing is re-written.
       if (isFollowUp) body.system.push({ type: "text", text: FOLLOWUP_NOTE });
-      if (search) body.tools = [{ type: rules.search, name: "web_search", max_uses: 4 }];
+      body.tools = [];
+      if (search) body.tools.push({ type: rules.search, name: "web_search", max_uses: 4 });
+      /* web_fetch can only retrieve URLs already present in the conversation,
+         so it is useless without the results block and exactly right with it:
+         the results are leads, and this is what turns a lead into the page
+         itself. Bounded deliberately - each fetched page is fresh input on
+         top of the prefix, so max_uses and max_content_tokens are the two
+         numbers that keep an answer from costing several cents. */
+      if (res && rules.fetch) {
+        body.tools.push({
+          type: rules.fetch,
+          name: "web_fetch",
+          max_uses: 3,
+          max_content_tokens: 6000,
+        });
+      }
+      if (!body.tools.length) delete body.tools;
       if (rules.effort) body.output_config = { effort };
       if (rules.thinking === "adaptive") body.thinking = { type: "adaptive" };
 
@@ -1190,6 +1433,7 @@
       let usage = {};
       let stopReason = null;
       let searchCount = 0;
+      let fetchCount = 0;
       const queries = [];
       const sources = [];
       const seen = new Set();
@@ -1243,6 +1487,19 @@
                 }
                 handlers.searching(searchCount);
                 if (sources.length) handlers.sources(sources);
+              } else if (cb.type === "web_fetch_tool_result") {
+                /* A fetch is stronger evidence than a search hit: the page was
+                   actually retrieved and read, so it belongs in the source list
+                   even though web_search results carry no citations. Errors
+                   arrive here too, as a single object rather than a list - the
+                   API returns HTTP 200 with an error_code and never throws. */
+                const c = cb.content;
+                if (c && !c.error_code) {
+                  fetchCount++;
+                  addSource(c.url, (c.document && c.document.title) || c.url);
+                  handlers.fetching(fetchCount);
+                  if (sources.length) handlers.sources(sources);
+                }
               }
             } else if (
               ev.type === "content_block_delta" &&
@@ -1318,6 +1575,7 @@
           effort,
           search,
           searches: searchCount,
+          fetches: fetchCount,
           queries,
           sources,
           answer: acc,
@@ -1670,6 +1928,9 @@
           searching(n) {
             status.textContent = "searching the web (" + n + ")";
           },
+          fetching(n) {
+            status.textContent = n === 1 ? "reading a page" : "reading pages (" + n + ")";
+          },
           sources(list) {
             renderSources(ui.srcs, list, null);
           },
@@ -1770,6 +2031,9 @@
         },
         searching(n) {
           status.textContent = "searching the web (" + n + ")…";
+        },
+        fetching(n) {
+          status.textContent = n === 1 ? "reading a page\u2026" : "reading pages (" + n + ")\u2026";
         },
         sources(list) {
           renderSources(self.srcs, list, null);
@@ -1898,8 +2162,12 @@
     const ph = hashStr(stored.trim() || SYSTEM);
     for (const [id] of MODELS) {
       for (const s of [true, false]) {
-        const v = await GM_.get(prefixKey(id, s, ph), null);
-        if (v && v.expires > now) warm.push(v);
+        // Both results variants, because either may be the warm one - the
+        // setting can change between queries within a single 5-minute TTL.
+        for (const r of [true, false]) {
+          const v = await GM_.get(prefixKey(id, s, ph, r), null);
+          if (v && v.expires > now) warm.push(v);
+        }
       }
     }
     warm.sort((a, b) => b.expires - a.expires);
@@ -2010,9 +2278,17 @@
     wrap.append(head, cols, compare.root);
     ui = { wrap, toggle, cols, cache, slot, spend };
 
+    /* "Auto" / "Manual" rather than "On" / "Off": the panel is present either
+       way, and what this actually chooses is whether a query is answered the
+       moment the page loads or only when you ask. "Off" read as though it
+       disabled the whole thing, which it never did - the overview stays
+       suppressed regardless. */
     function paintToggle(on) {
       toggle.setAttribute("aria-pressed", String(!!on));
-      toggle.textContent = on ? "On" : "Off";
+      toggle.textContent = on ? "Auto" : "Manual";
+      toggle.title = on
+        ? "Answering automatically on every search"
+        : "Answering only when you press Ask Claude";
     }
     paintToggle(cfg.enabled);
 
@@ -2227,6 +2503,36 @@
     promptBar.append(resetPrompt);
     promptWrap.append(promptBox, promptState, promptBar);
 
+    const resBox = el("input");
+    resBox.type = "checkbox";
+    resBox.checked = !!cur.results;
+    const resRow = el("label", "co-check");
+    resRow.append(resBox, document.createTextNode(" Send this page's search results with the query"));
+    /* Shows the user the actual bytes, not a description of them - the same
+       treatment the context field gets, and for the same reason: this is page
+       content leaving the browser, so it should be inspectable before it does.
+       Truncated because a full block runs to thousands of characters. */
+    /* The whole parse, scrolling rather than truncated. This is the one place
+       the user can audit exactly what leaves the browser, and an elided preview
+       cannot answer the question it exists to answer - "is there anything in
+       here I did not expect to send". */
+    const resPreview = el("div", "co-note co-pre co-prescroll");
+    (function paintResPreview() {
+      const r = pageResults();
+      if (!r) {
+        resPreview.textContent =
+          "No results detected on this page yet. Nothing would be sent.";
+        return;
+      }
+      resPreview.textContent =
+        r.count +
+        (r.count === 1 ? " result extract" : " result extracts") +
+        ", " +
+        r.chars.toLocaleString() +
+        " characters, sent exactly as below:\n\n" +
+        r.text;
+    })();
+
     const udm = el("input");
     udm.type = "checkbox";
     udm.checked = !!cur.udm14;
@@ -2263,6 +2569,15 @@
         "Off by default. It lets Claude answer “near me”, “open now” and “today” questions properly. Note that udm=14 removes Google’s local results, so the location line is often the only local signal available."
       ),
       field(
+        "Page results",
+        (() => {
+          const w = el("div");
+          w.append(resRow, resPreview);
+          return w;
+        })(),
+        "Off by default. Sends the results Google rendered on this page \u2014 each one exactly as shown, with its source, date, snippet and sitelinks \u2014 so Claude answers from the same evidence you can see. It rides in the message, after the prompt-cache breakpoint, so it costs nothing in cached prefix, but it is fresh input every query: roughly 600\u20133,000 extra tokens, capped at 12,000 characters. Google often renders destinations as abbreviated display URLs, and those are marked unlinkable so no answer invents an address from them."
+      ),
+      field(
         "Google results",
         udmRow,
         "The AI Overview is rendered inline in the search page, so there is no request to block. udm=14 is what stops Google generating it, but it also removes knowledge panels and image packs."
@@ -2273,6 +2588,8 @@
       const ctxChanged = ctxBox.checked !== !!cur.context;
       if (ctxBox.checked && !cur.context) primeGeo();
       await GM_.set("context", ctxBox.checked);
+      const resChanged = resBox.checked !== !!cur.results;
+      await GM_.set("results", resBox.checked);
       await GM_.set("udm14", udm.checked);
 
       // Store "" for the default so the built-in text stays live rather than
@@ -2288,7 +2605,7 @@
       // that on its own — so re-run WITHOUT force, and flipping the prompt back
       // costs nothing instead of re-billing every column.
       if (ctxChanged) for (const c of columns) c.run(true);
-      else if (promptChanged) for (const c of columns) c.run();
+      else if (promptChanged || resChanged) for (const c of columns) c.run();
       // Mirrored to localStorage so the document-start redirect can read it
       // synchronously. Not a secret — only the on/off flag.
       try {
@@ -2419,6 +2736,11 @@
 .co-note{font-size:12px;opacity:.7;margin-top:6px;line-height:18px}
 .co-pre{white-space:pre-wrap;font-family:monospace;font-size:11px;line-height:16px;opacity:.8;
  border:1px solid rgba(128,128,128,.28);border-radius:8px;padding:8px 10px;margin-top:8px}
+/* The results parse runs to thousands of characters, so it scrolls in place
+   instead of pushing the rest of the dialog off screen. overflow-wrap matters
+   as much as the height: a long URL is one unbroken monospace token, and with
+   no break opportunity it would widen the box and scroll the modal sideways. */
+.co-prescroll{max-height:260px;overflow:auto;overflow-wrap:anywhere}
 .co-check{display:flex;align-items:center;gap:8px;font-weight:400}
 .co-check input{width:auto}
 .co-histbar{display:flex;gap:8px;align-items:center;margin-bottom:8px}

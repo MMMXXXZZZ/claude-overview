@@ -58,7 +58,7 @@
 
 <label style="display:flex;align-items:center;gap:8px;font-weight:400;margin-top:18px">
   <input id="enabled" type="checkbox" style="width:auto" />
-  Answer queries automatically (off = suppress Google's overview, spend nothing)
+  Answer automatically on every search (off = manual, ask per query, spend nothing)
 </label>
 
 <label style="display:flex;align-items:center;gap:8px;font-weight:400">
@@ -80,6 +80,22 @@
   in the message, after the prompt-cache breakpoint, so it costs nothing in
   cached prefix. Note that <code>udm=14</code> removes Google's local results,
   so the footer line is often the only local signal available.
+</p>
+
+<label style="display:flex;align-items:center;gap:8px;font-weight:400">
+  <input id="results" type="checkbox" style="width:auto" />
+  Send this page's search results with the query
+</label>
+<p class="note" style="margin-top:6px">
+  Off by default. With it on, each query also carries the results Google
+  rendered on the page &mdash; every result exactly as shown, including its
+  source, date, snippet and sitelinks &mdash; so Claude answers from the same
+  evidence you can see rather than only from memory or its own searches. It
+  travels in the message, after the prompt-cache breakpoint, so it costs nothing
+  in cached prefix, but it is fresh input on every query: roughly 600&ndash;3,000
+  extra input tokens, capped at 12,000 characters. Google frequently renders
+  destinations as abbreviated display URLs (or as opaque redirects), and those
+  are marked as unlinkable so no answer invents an address from them.
 </p>
 
 <label style="display:flex;align-items:center;gap:8px;font-weight:400">

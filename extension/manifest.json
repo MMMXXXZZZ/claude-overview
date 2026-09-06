@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Claude Overview",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Replaces Google's AI Overview with a Claude-generated answer. Blocks Google's AI Overview requests before they leave the browser.",
   "permissions": [
     "storage",

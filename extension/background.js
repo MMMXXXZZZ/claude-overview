@@ -17,21 +17,25 @@ const MODEL_RULES = {
     effort: true,
     thinking: "adaptive",
     search: "web_search_20260209",
+    fetch: "web_fetch_20260209",
   },
   "claude-sonnet-5": {
     effort: true,
     thinking: "adaptive",
     search: "web_search_20260209",
+    fetch: "web_fetch_20260209",
   },
   "claude-fable-5": {
     effort: true,
     thinking: "omit",
     search: "web_search_20250305",
+    fetch: "web_fetch_20250910",
   },
   "claude-haiku-4-5": {
     effort: false,
     thinking: "omit",
     search: "web_search_20250305",
+    fetch: "web_fetch_20250910",
   },
 };
 
@@ -86,6 +90,72 @@ const SEARCH_NOTE = [
   "targeted. Do not narrate your searching or list sources; just answer.",
 ].join("\n");
 
+/* Sent as a SECOND system block on follow-up turns only. It must never be
+   merged into the block above: that one carries the cache_control breakpoint,
+   and editing it would fork the ~6.2k-token prefix into a second entry keyed
+   by whether the turn is a follow-up. Blocks placed after the breakpoint still
+   match the cached prefix, so this costs a few tokens and nothing else.
+
+   The base prompt is written for a one-shot overview - 90 words, no follow-up
+   question, no preamble. Most of that is wrong once the reader is actually
+   talking to you, so this relaxes exactly the parts that conflict. */
+const FOLLOWUP_NOTE = [
+  "The reader has followed up on the answer above, so this is now a",
+  "conversation rather than a search overview. Answer the follow-up directly,",
+  "in plain prose, and assume everything already said is shared context - do",
+  "not restate it. You may run to about 150 words when the question genuinely",
+  "needs it, and you may end by naming a specific open question if one",
+  "actually matters. Still no headings, no bullet lists, no preamble and no",
+  "sign-off.",
+].join("\n");
+
+/* Appended mechanically from the results toggle, exactly like SEARCH_NOTE, so
+   it can never claim page content that was not actually attached.
+
+   The URL warning is load-bearing. Google renders the destination as an
+   abbreviated <cite> ("https://www.tembomoney.com > learn > spring-budget-..."),
+   and on some page variants the anchor href is an opaque /goto?url= redirect
+   rather than the destination - so a "URL" in this block is frequently not a
+   URL you can navigate to. The base prompt promises never to guess a link;
+   without this the results block would become the thing that breaks it. */
+const RESULTS_NOTE = [
+  "",
+  "A <results> block holding extracts of the search results Google rendered on",
+  "this page may precede the query. Each entry is one result extract as it was",
+  "shown, so it may also carry a source name, a date, a comment or view count,",
+  "and sitelinks. They are extracts, not the pages themselves.",
+  "",
+  "Judge per query whether the block already answers it. Often it plainly does",
+  "- a date, a price, a score, a name, a version number, opening hours, and the",
+  "agreement of several results is itself evidence. Take it straight from the",
+  "block in that case and answer immediately; do not fetch a page to confirm",
+  "something already stated in front of you.",
+  "",
+  "Just as often it does not. A snippet is a fragment Google chose for matching",
+  "the query's words, so it can share the query's vocabulary while never",
+  "stating the fact asked for, break off mid-sentence, or answer a nearby",
+  "question instead. When the specific thing asked for is not plainly there,",
+  "treat the entries as leads rather than as the answer: fetch the URL of the",
+  "most promising one and read the page, or search for it when no URL is given.",
+  "Reading one good page beats stitching fragments into an answer none of them",
+  "actually made.",
+  "",
+  "Results also disagree with each other, and with the pages behind them. Never",
+  "repeat the list back, never summarise it result by result, and never mention",
+  "that you were given it.",
+  "An entry may begin with a line reading \"URL: \" and a full address; only",
+  "those addresses may be fetched or linked. The address shown inside a",
+  "result's own text is Google's abbreviated display form, often with an",
+  "ellipsis, and is not a real address - never reconstruct, fetch or link one.",
+].join("\n");
+
+// Cheap, stable key material - not a security hash.
+function hashStr(str) {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h * 33) ^ str.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+
 async function getKey() {
   const { apiKey } = await api.storage.local.get("apiKey");
   return apiKey || "";
@@ -95,8 +165,24 @@ async function getKey() {
 // the context itself: a location- or date-dependent answer must not be
 // replayed for a different day or place, but the clock must not be part of the
 // key or nothing would ever hit.
-function cacheKey(q, model, effort, search, ctxSig) {
-  return "a:" + model + ":" + effort + ":" + (search ? "s" : "n") + ":" + (ctxSig || "-") + ":" + q;
+// resSig is the same idea for the page's own search results: the answer is
+// built from what Google rendered, so a different result set must not replay
+// an answer produced from the previous one.
+function cacheKey(q, model, effort, search, ctxSig, resSig) {
+  return (
+    "a:" + model + ":" + effort + ":" + (search ? "s" : "n") +
+    ":" + (ctxSig || "-") + ":" + (resSig || "-") + ":" + q
+  );
+}
+
+// A follow-up is keyed by the whole exchange leading up to it, not by the
+// original query: two different conversations can reach the same question and
+// must not share an answer.
+function followUpKey(model, effort, search, prior, sentUser) {
+  return (
+    "a:" + model + ":" + effort + ":" + (search ? "s" : "n") + ":f:" +
+    hashStr(JSON.stringify(prior) + sentUser)
+  );
 }
 
 /* Local spend accounting. The Usage & Cost Admin API needs an Admin API key
@@ -132,8 +218,14 @@ function costOf(model, usage) {
 // Prompt-cache TTL; reads refresh it.
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
-function prefixKey(model, search) {
-  return "cw:" + model + ":" + (search ? "s" : "n");
+// The cached prefix IS the tool definitions plus the system block, so anything
+// that changes the system block forks it. RESULTS_NOTE is appended from the
+// results toggle, so that flag belongs in the key too - without it the warm
+// chip would count down against a prefix nothing is going to read, and the
+// leader gate would hold requests for a write that already happened under the
+// other variant.
+function prefixKey(model, search, results) {
+  return "cw:" + model + ":" + (search ? "s" : "n") + (results ? ":r" : "");
 }
 
 // A prompt-cache entry only becomes readable once the first response has begun
@@ -210,11 +302,43 @@ api.storage.onChanged.addListener((changes, area) => {
   if (area === "sync" && changes.udm14) syncUdmRuleset();
 });
 
-api.runtime.onMessage.addListener((msg) => {
+/* Conversations are held here rather than in page storage: a thread is the
+   user's, and the google.com origin is readable by Google's own scripts.
+   Session storage, so they last as long as the browser is open and no longer -
+   the same lifetime as the answer cache they sit alongside. */
+const THREAD_CAP = 40;
+
+async function threadPut(key, turns) {
+  const all = await api.storage.session.get(null);
+  const keys = Object.keys(all).filter((k) => k.startsWith("t:"));
+  // Evict oldest first so a long session cannot grow the store without bound.
+  if (keys.length >= THREAD_CAP) {
+    keys.sort((x, y) => (all[x].ts || 0) - (all[y].ts || 0));
+    await api.storage.session.remove(keys.slice(0, keys.length - THREAD_CAP + 1));
+  }
+  await api.storage.session.set({ ["t:" + key]: { turns, ts: Date.now() } });
+}
+
+api.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   if (!msg) return;
   if (msg.type === "open-options") api.runtime.openOptionsPage();
   if (msg.type === "open-history") {
     api.tabs.create({ url: api.runtime.getURL("history.html") });
+  }
+  if (msg.type === "thread-get") {
+    // Returning true keeps the message channel open for the async reply; the
+    // panel awaits this before deciding whether to replay stored turns.
+    api.storage.session
+      .get("t:" + msg.key)
+      .then((all) => sendResponse(all["t:" + msg.key] || null))
+      .catch(() => sendResponse(null));
+    return true;
+  }
+  if (msg.type === "thread-put") {
+    threadPut(msg.key, msg.turns);
+  }
+  if (msg.type === "thread-drop") {
+    api.storage.session.remove("t:" + msg.key);
   }
 });
 
@@ -230,10 +354,26 @@ api.runtime.onConnect.addListener((port) => {
     if (!msg || msg.type !== "ask") return;
 
     const { query, model, effort, search } = msg;
-    // Built in the content script (this worker has no page or DOM) and sent
-    // per request. It goes in the user message, after the cache_control
-    // breakpoint, so it never invalidates the ~6.2k-token cached prefix.
+    // Both are built in the content script (this worker has no page or DOM)
+    // and sent per request. They go in the USER MESSAGE, after the
+    // cache_control breakpoint, so they never invalidate the ~6.2k-token
+    // cached prefix - which is the whole reason they are not in the system
+    // block despite reading like instructions.
     const ctx = msg.context && msg.context.text ? msg.context : null;
+    const pageRes = msg.results && msg.results.text ? msg.results : null;
+
+    // prior holds the turns already exchanged, exactly as they were sent, so a
+    // follow-up replays byte-identical text and the cached prefix still hits.
+    const prior = Array.isArray(msg.prior) ? msg.prior : [];
+    const isFollowUp = prior.length > 0;
+    // The page blocks ride on the first user turn only; later turns inherit
+    // them through the thread rather than repeating them every message.
+    const sentUser = isFollowUp
+      ? msg.question
+      : [ctx && ctx.text, pageRes && pageRes.text, query]
+          .filter(Boolean)
+          .join("\n\n");
+
     const post = (m) => {
       try {
         port.postMessage(m);
@@ -244,7 +384,9 @@ api.runtime.onConnect.addListener((port) => {
 
     // Serve a cached answer rather than re-spending credits on a repeat view
     // (back/forward navigation re-runs the content script).
-    const ck = cacheKey(query, model, effort, search, ctx && ctx.sig);
+    const ck = isFollowUp
+      ? followUpKey(model, effort, search, prior, sentUser)
+      : cacheKey(query, model, effort, search, ctx && ctx.sig, pageRes && pageRes.sig);
     const cached = await api.storage.session.get(ck);
     if (cached[ck]) {
       post({ type: "delta", text: cached[ck].text });
@@ -253,6 +395,9 @@ api.runtime.onConnect.addListener((port) => {
         usage: cached[ck].usage,
         queries: cached[ck].queries || [],
         sources: cached[ck].sources || [],
+        // The panel seeds its thread from sentUser, so a cached answer has to
+        // carry it too or a follow-up after a reload starts from nothing.
+        sentUser,
       });
       return;
     }
@@ -270,7 +415,7 @@ api.runtime.onConnect.addListener((port) => {
 
     // Wait behind a cold-prefix leader if one is already warming this exact
     // tools+system prefix, so we read its entry instead of writing a duplicate.
-    const pk = prefixKey(model, search);
+    const pk = prefixKey(model, search, !!pageRes);
     let gate = null;
     if (search) {
       const pending = prefixLeaders.get(pk);
@@ -288,7 +433,10 @@ api.runtime.onConnect.addListener((port) => {
       system: [
         {
           type: "text",
-          text: SYSTEM + (search ? SEARCH_NOTE : NO_SEARCH_NOTE),
+          text:
+            SYSTEM +
+            (search ? SEARCH_NOTE : NO_SEARCH_NOTE) +
+            (pageRes ? RESULTS_NOTE : ""),
           cache_control: { type: "ephemeral" },
         },
       ],
@@ -310,9 +458,25 @@ api.runtime.onConnect.addListener((port) => {
     // Relaxes the one-shot rules the base prompt imposes. Appended after the
     // cached block, so the prefix still matches and nothing is re-written.
     if (isFollowUp) body.system.push({ type: "text", text: FOLLOWUP_NOTE });
+    body.tools = [];
     if (search) {
-      body.tools = [{ type: rules.search, name: "web_search", max_uses: 4 }];
+      body.tools.push({ type: rules.search, name: "web_search", max_uses: 4 });
     }
+    /* web_fetch can only retrieve URLs already present in the conversation, so
+       it is useless without the results block and exactly right with it: the
+       results are leads, and this turns a lead into the page itself. Bounded
+       deliberately - each fetched page is fresh input on top of the prefix, so
+       max_uses and max_content_tokens are what keep an answer from costing
+       several cents. */
+    if (pageRes && rules.fetch) {
+      body.tools.push({
+        type: rules.fetch,
+        name: "web_fetch",
+        max_uses: 3,
+        max_content_tokens: 6000,
+      });
+    }
+    if (!body.tools.length) delete body.tools;
     if (rules.effort) body.output_config = { effort };
     if (rules.thinking === "adaptive") body.thinking = { type: "adaptive" };
 
@@ -362,6 +526,7 @@ api.runtime.onConnect.addListener((port) => {
     let usage = {};
     let stopReason = null;
     let searchCount = 0;
+    let fetchCount = 0;
     const queries = [];
     const sources = [];
     const seenUrls = new Set();
@@ -425,6 +590,18 @@ api.runtime.onConnect.addListener((port) => {
                 for (const r of items) addSource(r.url, r.title);
                 post({ type: "searching", n: searchCount });
                 if (sources.length) post({ type: "sources", sources });
+              } else if (cb.type === "web_fetch_tool_result") {
+                /* A fetch is stronger evidence than a search hit: the page was
+                   actually retrieved and read. Errors arrive here too, as a
+                   single object rather than a list - the API returns HTTP 200
+                   with an error_code and never throws. */
+                const c = cb.content;
+                if (c && !c.error_code) {
+                  fetchCount++;
+                  addSource(c.url, (c.document && c.document.title) || c.url);
+                  post({ type: "fetching", n: fetchCount });
+                  if (sources.length) post({ type: "sources", sources });
+                }
               }
             } else if (
               ev.type === "content_block_delta" &&
@@ -501,7 +678,7 @@ api.runtime.onConnect.addListener((port) => {
     // Prefix is tools+system, so key by model + whether search was attached.
     if (usage.cache_creation_input_tokens || usage.cache_read_input_tokens) {
       await api.storage.session.set({
-        [prefixKey(model, search)]: {
+        [pk]: {
           model,
           search: !!search,
           expires: Date.now() + CACHE_TTL_MS,
@@ -525,6 +702,7 @@ api.runtime.onConnect.addListener((port) => {
       effort,
       search,
       searches: searchCount,
+      fetches: fetchCount,
       queries,
       sources,
       answer: acc,

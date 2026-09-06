@@ -103,6 +103,7 @@ const DEFAULTS = {
   effort: "medium",
   search: true,
   context: false,
+  results: false,
 };
 const MODELS = [
   ["claude-haiku-4-5", "Haiku 4.5"],
@@ -114,8 +115,12 @@ const EFFORTS = ["low", "medium", "high", "xhigh", "max"];
 // Haiku 4.5 rejects output_config.effort outright, so the picker offers no
 // effort levels for it rather than sending something the API will 400 on.
 const NO_EFFORT = new Set(["claude-haiku-4-5"]);
+// Shown in manual mode. It has to say that nothing is being spent AND that the
+// overview is still gone, because those are the two things a reader looking at
+// an empty panel actually wonders about.
 const OFF_TEXT =
-  "Off — no credits are being spent. Google's AI Overview stays blocked.";
+  "Manual \u2014 nothing is sent until you ask, and no credits are being spent. " +
+  "Google's AI Overview stays blocked.";
 
 const params = new URLSearchParams(location.search);
 const query = params.get("q") || "";
@@ -600,6 +605,145 @@ function pageContext() {
   };
 }
 
+/* ---------- 4c. The page's own search results ----------
+   Sent only when the user turns it on. Like pageContext this rides in the USER
+   MESSAGE, after the cache_control breakpoint, so it never invalidates the
+   ~6.2k-token cached prefix.
+
+   Structural, not class-based - Google's SERP class names are obfuscated and
+   rotate (measured here: .zReHs / .yuRUbf / .kb0PBd). Three properties that are
+   not cosmetic do the work instead, all verified against a live SERP on
+   2026-09-06, both with and without udm=14:
+
+     - An organic result is an anchor inside #rso containing an <h3>. This is
+       the same signal overviewUnit() already trusts to avoid eating the results
+       column, so if it ever breaks, more than this function is broken.
+     - [data-hveid] is the result's own container: the nearest such ancestor of
+       the anchor held exactly one <h3> and the whole rendered result - title,
+       source name, date or comment count, snippet, sitelinks - and nothing else.
+     - <cite> holds the displayed URL, or on social and video results the meta
+       line instead ("4 comments - 5 years ago").
+
+   The whole rendered text of each block is sent rather than parsed fields.
+   Google puts dates in at least two different places (an "Aug 27, 2026 - "
+   prefix on the snippet, or inside the cite meta line), and a parse that tries
+   to normalise that loses more than it gains. */
+
+// Google does not always expose the destination: on some page variants every
+// result href is an opaque /goto?url=CAESaQ... redirect, so no real URL is
+// available and the <cite> text - abbreviated with an ellipsis - is all there
+// is. Returning null rather than the redirect matters, because the system
+// prompt permits linking any URL the model was given.
+function resultUrl(a) {
+  const raw = a.getAttribute("href") || "";
+  if (!raw || raw.startsWith("#")) return null;
+  let u;
+  try {
+    u = new URL(a.href);
+  } catch (e) {
+    return null;
+  }
+  if (!/^https?:$/.test(u.protocol)) return null;
+  // Any google.com host here is a redirector (/goto, /url), not a destination.
+  if (/(^|\.)google\.[a-z.]+$/i.test(u.hostname)) return null;
+  return u.href;
+}
+
+// A rendered SERP runs to a few thousand characters; this bounds the worst case
+// (expanded sitelinks on every result) so the feature cannot quietly multiply
+// what a query costs. Measured on ordinary queries: about 2-4k.
+const RESULTS_CHAR_CAP = 12000;
+
+function pageResults() {
+  try {
+    const root = document.querySelector("#rso") || document.querySelector("#search");
+    if (!root) return null;
+
+    const seen = new Set();
+    const entries = [];
+    for (const a of root.querySelectorAll("a")) {
+      if (!a.querySelector("h3")) continue;
+      if (a.closest("#claude-overview")) continue; // never feed our own panel back
+      const block = a.closest("[data-hveid]") || a.parentElement;
+      if (!block || seen.has(block)) continue;
+      seen.add(block);
+
+      // innerText, not textContent: it reflects what was actually rendered,
+      // skipping hidden nodes and keeping Google's own line breaks.
+      let text = (block.innerText || "").replace(/\n{3,}/g, "\n\n").trim();
+      // The first result on a page also absorbs the section heading
+      // Google renders above the list ("Web results"), because that
+      // heading lives inside the same [data-hveid]. A rendered result
+      // always begins with its own title, so anything before the title
+      // is chrome rather than content.
+      const title = (block.querySelector("h3").innerText || "").trim();
+      const at = title ? text.indexOf(title) : -1;
+      if (at > 0 && at < 80) text = text.slice(at);
+      if (!text) continue;
+      const url = resultUrl(a);
+      // The URL line is added ONLY when a real destination was
+      // recoverable. Google renders the address inside the result text
+      // anyway (abbreviated, as a <cite>), so a line announcing its
+      // absence would repeat on every entry and say nothing - measured
+      // at ~700 wasted characters on an ordinary 8-result page. Which
+      // entries are linkable is exactly what its presence encodes.
+      entries.push(url ? "URL: " + url + "\n" + text : text);
+    }
+    if (!entries.length) return null;
+
+    let text = "";
+    let n = 0;
+    for (const e of entries) {
+      const next = (n ? "\n\n" : "") + "[" + (n + 1) + "]\n" + e;
+      if (text.length + next.length > RESULTS_CHAR_CAP) break;
+      text += next;
+      n++;
+    }
+    if (!n) return null;
+
+    return {
+      text: "<results>\n" + text + "\n</results>",
+      count: n,
+      chars: text.length,
+      // Keys the answer cache: a different result set must not replay an answer
+      // that was built from the previous one.
+      sig: hashStr(text),
+    };
+  } catch (e) {
+    return null; // never let a SERP layout change break the request
+  }
+}
+
+/* Results are rendered by Google's own scripts, so at document_start they are
+   usually not in the DOM yet. Every path except the cold auto-run - the manual
+   "Ask Claude" button, Regenerate, a follow-up - happens long after load and
+   returns on the first line without waiting.
+
+   The deadline is what makes this safe: a SERP that never populates #rso (a
+   layout change, a consent interstitial) has to degrade to sending no results,
+   not hang the panel with a caret blinking forever. */
+const RESULTS_WAIT_MS = 1500;
+
+function awaitResults() {
+  const ready = pageResults();
+  if (ready) return Promise.resolve(ready);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      mo.disconnect();
+      resolve(pageResults());
+    };
+    const mo = new MutationObserver(() => {
+      if (pageResults()) finish();
+    });
+    mo.observe(document.documentElement, { childList: true, subtree: true });
+    const timer = setTimeout(finish, RESULTS_WAIT_MS);
+  });
+}
+
 // Sub-cent answers are the norm, so a two-decimal figure would read as $0.00
 // for almost every query and tell the user nothing. The header total is
 // coarser on purpose - see paintSpend.
@@ -882,6 +1026,9 @@ class Column {
     port.onMessage.addListener((msg) => {
       if (msg.type === "queued") {
         status.textContent = "waiting for the prompt cache";
+      } else if (msg.type === "fetching") {
+        status.textContent =
+          msg.n === 1 ? "reading a page" : "reading pages (" + msg.n + ")";
       } else if (msg.type === "searching") {
         status.textContent = msg.query
           ? "searched: " + msg.query
@@ -945,7 +1092,7 @@ class Column {
     });
   }
 
-  run() {
+  async run() {
     if (!query) return this.idle("No query detected.");
     this.disconnect();
     // A fresh first turn is a fresh conversation: the follow-ups below it
@@ -963,11 +1110,15 @@ class Column {
 
     let acc = "";
     const started = performance.now();
-    this.port = api.runtime.connect({ name: "claude-overview" });
+    const port = api.runtime.connect({ name: "claude-overview" });
+    this.port = port;
 
-    this.port.onMessage.addListener((msg) => {
+    port.onMessage.addListener((msg) => {
       if (msg.type === "queued") {
         status.textContent = "waiting for the prompt cache…";
+      } else if (msg.type === "fetching") {
+        status.textContent =
+          msg.n === 1 ? "reading a page\u2026" : "reading pages (" + msg.n + ")\u2026";
       } else if (msg.type === "searching") {
         status.textContent = msg.query
           ? "searched: " + msg.query
@@ -1032,14 +1183,23 @@ class Column {
       }
     });
 
-    this.port.postMessage({
+    // Both are built here because the service worker has no page to read.
+    // Results may need to wait for Google to render them, so the port is opened
+    // first (the caret is already on screen) and the request posted after.
+    const results = this.cfg.results ? await awaitResults() : null;
+    // The wait is long enough for the column to have been torn down under us -
+    // toggled to manual, model changed, tab closed. Posting to a disconnected
+    // port would throw and, worse, bill a query nobody is waiting for.
+    if (this.port !== port) return;
+
+    port.postMessage({
       type: "ask",
       query,
       model: this.cfg.model,
       effort: this.cfg.effort,
       search: this.cfg.search,
-      // Built here because the service worker has no page to read.
       context: this.cfg.context ? pageContext() : null,
+      results,
     });
   }
 }
@@ -1212,9 +1372,16 @@ function buildPanel(cfg) {
   startCacheTicker();
   paintSpend();
 
+  // "Auto" / "Manual" rather than "On" / "Off": the panel is present either
+  // way, and what the control actually chooses is whether a query is answered
+  // the moment the page loads or only when you ask for it. "Off" read as though
+  // it disabled the extension, which it never did.
   function paintToggle(on) {
     toggle.setAttribute("aria-pressed", String(!!on));
-    toggle.textContent = on ? "On" : "Off";
+    toggle.textContent = on ? "Auto" : "Manual";
+    toggle.title = on
+      ? "Answering automatically on every search"
+      : "Answering only when you press Ask Claude";
   }
   paintToggle(cfg.enabled);
 

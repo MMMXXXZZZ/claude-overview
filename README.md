@@ -12,27 +12,6 @@ the panel, or the Tampermonkey menu → *Claude Overview: settings*, and paste a
 Anthropic API key. Written against the common GM API, so it also runs on
 Violentmonkey and Greasemonkey.
 
-**For editing it — `claude-overview.dev.user.js`.** A metadata-only loader that
-pulls the real file from a local server, so a save plus a page reload is the
-whole edit loop with no reinstall. Start the server from the repo root first:
-
-```
-node dev-server.mjs
-```
-
-then install the loader *instead of* the main file. `@require file://` is not an
-option here: Firefox extensions cannot read `file://` URLs, so it has to be
-HTTP. The server sends `Cache-Control: no-store` because Tampermonkey caches
-`@require` resources — otherwise you keep running the previous version after
-every edit. If it still feels stale, set Tampermonkey → Settings → Config mode
-**Advanced** → Externals → **Update Interval: Always**.
-
-Every `@grant`, `@connect`, `@match` and `@run-at` has to live in the loader,
-because a required file's own metadata block is read as plain comments. With the
-server down the `@require` fails and no panel appears — that is the expected
-failure mode, not a bug. The two installs keep separate storage, so switching
-between them means re-entering the key once.
-
 **Extension (Chrome/Firefox MV3)** — the `extension/` folder is the same tool
 packaged as an add-on, kept because it can do one thing the userscript cannot
 (see below). Chrome: `chrome://extensions` → Developer mode → Load unpacked.
@@ -60,7 +39,7 @@ settings:
 
 | Control | Effect |
 |---|---|
-| **On / Off** | Off answers nothing and spends no credits. Google's overview stays suppressed either way. |
+| **Auto / Manual** | Manual sends nothing until you press Ask Claude, and spends no credits. Google's overview stays suppressed either way. |
 | **Model** | Opus 5, Sonnet 5, Haiku 4.5, Fable 5. |
 | **Effort** | `low`–`max`. Disabled for Haiku 4.5, which rejects the parameter. |
 | **Search** | Gives Claude the web search tool, so answers are grounded rather than from memory. |
@@ -84,6 +63,64 @@ the model ignores them, but they are still what the search returned.
 
 Conceptual queries ("why is the sky blue") are answered from knowledge without
 searching, so no pill appears — the prompt working as intended, not a failure.
+
+## Answering from the page's own results
+
+Off by default; turn it on in settings (⚙, "Page results"). With it on, each
+query also carries extracts of the results Google rendered on that page — every
+result as shown, with its source, date, snippet and sitelinks.
+
+The point is not only that Claude can quote them. It is that they are *leads*.
+The prompt tells Claude to judge per query: take a fact straight from the block
+when it is plainly there (a date, a price, a version number, opening hours, or
+several results agreeing), and otherwise treat the entries as starting points —
+fetch the page behind the most promising one and read it, or search for it when
+no URL is available. A snippet is a fragment Google chose for matching the
+query's words, so it routinely shares the query's vocabulary without ever
+stating the fact asked for; stitching several of those into an answer none of
+them made is the failure mode this is written against.
+
+To make the reading half possible, the `web_fetch` tool is attached whenever
+results are attached — and only then, because `web_fetch` can only retrieve URLs
+that already appear in the conversation, which is exactly what the results block
+puts there. It runs on Anthropic's servers, like `web_search`: nothing is
+fetched from your browser, and your IP and cookies are not involved. It is
+capped at 3 fetches of at most 6,000 tokens each. A fetched page joins the
+source list, and unlike a search hit it is genuine evidence the page was read.
+
+Costs, measured on real SERPs: an 8-result page is about 2.1 KB, roughly 550
+input tokens, capped at 12,000 characters. It rides in the user message, after
+the cache-control breakpoint, so it never invalidates the ~6.2k-token cached
+prefix — but it is fresh input on every query rather than something cached. One
+measured answer came to $0.0028 on Sonnet 5. Note also that attaching results
+changes the system block, so the on and off variants are separate cached
+prefixes.
+
+It frequently removes the need to search at all. On "when is the uk autumn
+budget 2026" with web search enabled, Claude ran zero searches and answered from
+the page — saving the ~$0.01 search fee, because the answer was already on
+screen.
+
+The settings dialog shows the exact text that would be sent for the current
+page, in full and scrolling, before you enable anything.
+
+Harvesting is structural rather than class-based, because Google's SERP class
+names are obfuscated and rotate. An organic result is an anchor inside `#rso`
+containing an `h3` — the same signal the overview-removal climb already relies
+on — and the result's own block is that anchor's nearest `[data-hveid]`
+ancestor, which holds exactly one `h3` and the whole rendered result. The block's
+rendered text is sent as-is rather than parsed into fields, because Google puts
+dates in at least two different places (an `Aug 27, 2026 — ` prefix on the
+snippet, or inside a `<cite>` meta line such as `4 comments · 5 years ago`), and
+normalising that loses more than it gains.
+
+**URLs are the weak point.** Google renders the destination as an abbreviated
+`<cite>` (`https://www.example.com › learn › spring-budget-...`), and on some
+page variants every result href is an opaque `/goto?url=…` redirect rather than
+the destination. A `URL:` line is therefore emitted only when a real address was
+recoverable, and the prompt states that only those may be fetched or linked —
+the abbreviated display form must never be reconstructed into one. Where no real
+URL is recoverable, the fetch half of this feature cannot do anything.
 
 ## Where the panel goes
 
@@ -259,14 +296,8 @@ model/effort/search, JSON export, and clearing.
 
 ## Layout
 
-`extension/`  the extension itself
-`test/`  a fixture page that mirrors the real SERP nesting
-(`#center_col > #gevUs > #search`) plus a harness that stubs the extension APIs,
-for exercising the panel against the live API without loading it into a browser.
-
-Run it with `python -m http.server 8777` from the repo root, then open
-`http://localhost:8777/test/fixture.html?q=your+query`. It reads a key from
-`test/_key.js` (gitignored, `window.__KEY__="sk-ant-..."`).
+`extension/`  the same tool as an MV3 extension, kept in sync with the
+userscript. The userscript is the one that is actually used.
 
 ## Known gaps
 
@@ -281,6 +312,16 @@ Run it with `python -m http.server 8777` from the repo root, then open
   the number of result batches and the sources, but not the query strings.
 - The AI Overview DOM selectors are best-effort and Google rotates them; the
   text-label sweep is the durable fallback.
+- **`web_fetch` is unverified end to end.** Every result href on the SERP
+  variant used for testing was a `/goto?url=` redirect, so no fetchable URL was
+  ever emitted and the fetch path never ran. That variant is probably a
+  bot-page artifact of the automated browser (`navigator.webdriver`), but it has
+  not been confirmed against an ordinary session.
+- Sending page results is only wired for standard web results. It reads `#rso`,
+  so on a page where Google renders no organic results it sends nothing rather
+  than failing.
+- The result harvester is only exercisable against a live SERP; the offline
+  fixtures use simplified result markup with no `#rso`, `a h3` or `data-hveid`.
 - Favicons are fetched through `wsrv.nl`, which therefore sees the source
   domains. The browser contacts only that host: wsrv resolves the icon via
   DuckDuckGo's lookup server-side and falls back to the site's own

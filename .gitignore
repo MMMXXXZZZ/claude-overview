@@ -25,3 +25,12 @@ secrets*
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local dev loop — kept out of the published repo.
+# The dev loader @requires the userscript from a local HTTP server (Firefox
+# extensions cannot read file:// URLs), and the fixtures drive the panel
+# against the live API. None of it is needed to run the released userscript,
+# which is self-contained.
+claude-overview.dev.user.js
+dev-server.mjs
+test/

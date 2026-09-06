@@ -14,6 +14,7 @@ const $ = (id) => document.getElementById(id);
     enabled: true,
     search: true,
     context: false,
+    results: false,
     udm14: true,
   });
   const local = await api.storage.local.get("apiKey");
@@ -22,6 +23,7 @@ const $ = (id) => document.getElementById(id);
   $("enabled").checked = sync.enabled;
   $("search").checked = sync.search;
   $("context").checked = sync.context;
+  $("results").checked = sync.results;
   $("udm14").checked = sync.udm14;
   // Write-only: never render the stored secret back into the field.
   const k = local.apiKey || "";
@@ -37,6 +39,7 @@ $("save").addEventListener("click", async () => {
     enabled: $("enabled").checked,
     search: $("search").checked,
     context: $("context").checked,
+    results: $("results").checked,
     udm14: $("udm14").checked,
   });
   // Only overwrite the key when a new one was actually typed.
