@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Claude Overview
 // @namespace    claude-overview
-// @version      1.3.0
+// @version      1.3.1
 // @description  Removes Google's AI Overview and replaces it with Claude (API required). Choose models, effort, and optionally answer from the page's own search results.
 // @license      MIT
 // @match        https://www.google.com/search*
@@ -2371,7 +2371,7 @@
       if (e.target === back) close();
     });
     root.append(back);
-    return { back, body, close };
+    return { back, body, close, host };
   }
 
   // Validates a key without storing it, using count_tokens — which is free, so
@@ -2403,7 +2403,7 @@
   }
 
   async function openSettings() {
-    const { body, close } = modal("Claude Overview — settings");
+    const { body, close, back, host } = modal("Claude Overview — settings");
     const cur = {};
     for (const k of Object.keys(DEFAULTS)) cur[k] = await GM_.get(k, DEFAULTS[k]);
 
@@ -2584,38 +2584,126 @@
       )
     );
 
-    const done = button("Close", "co-chip", async () => {
-      const ctxChanged = ctxBox.checked !== !!cur.context;
+    /* Settings save on modification, not on Close. A dialog whose changes are
+       lost unless you press the right button is a trap - and this one is worse
+       than most, because closing it by clicking the backdrop or pressing Escape
+       is the natural gesture and used to discard everything silently.
+
+       Each control therefore owns its own persistence and its own consequence.
+       `cur` is updated as we go, so it stays the record of what is stored and
+       the "did this actually change" comparisons hold across several edits in
+       one visit. */
+    const savedNote = el("div", "co-note co-saved");
+
+    // A re-run costs real money, so the note has to distinguish "stored" from
+    // "stored, and your columns are re-answering because of it".
+    let noteTimer = null;
+    function flash(text) {
+      savedNote.textContent = text;
+      savedNote.classList.add("co-savedon");
+      clearTimeout(noteTimer);
+      noteTimer = setTimeout(() => savedNote.classList.remove("co-savedon"), 1800);
+    }
+
+    ctxBox.addEventListener("change", async () => {
       if (ctxBox.checked && !cur.context) primeGeo();
+      cur.context = ctxBox.checked;
       await GM_.set("context", ctxBox.checked);
-      const resChanged = resBox.checked !== !!cur.results;
+      // The context is part of the prompt, so a change invalidates every answer
+      // on screen. Force, because the cache key it changes is the one that
+      // would otherwise replay the same text back.
+      for (const c of columns) c.run(true);
+      flash("Saved. Re-answering with the new setting.");
+    });
+
+    resBox.addEventListener("change", async () => {
+      cur.results = resBox.checked;
       await GM_.set("results", resBox.checked);
+      // No force: the results signature is already part of the answer-cache
+      // key, so the new shape misses on its own and switching back reuses the
+      // old answer instead of re-billing for it.
+      for (const c of columns) c.run();
+      flash("Saved. Re-answering with the new setting.");
+    });
+
+    udm.addEventListener("change", async () => {
+      cur.udm14 = udm.checked;
       await GM_.set("udm14", udm.checked);
-
-      // Store "" for the default so the built-in text stays live rather than
-      // being frozen as a copy the moment the dialog is opened.
-      const typed = promptBox.value.trim();
-      const nextPrompt = !typed || typed === SYSTEM.trim() ? "" : typed;
-      const promptChanged = nextPrompt !== ((cur.systemPrompt || "").trim());
-      await GM_.set("systemPrompt", nextPrompt);
-
-      // The context is part of the prompt, so a change invalidates every
-      // on-screen answer; re-run rather than leaving stale text up.
-      // A prompt edit invalidates them too, but its new answer-cache key does
-      // that on its own — so re-run WITHOUT force, and flipping the prompt back
-      // costs nothing instead of re-billing every column.
-      if (ctxChanged) for (const c of columns) c.run(true);
-      else if (promptChanged || resChanged) for (const c of columns) c.run();
       // Mirrored to localStorage so the document-start redirect can read it
-      // synchronously. Not a secret — only the on/off flag.
+      // synchronously. Not a secret - only the on/off flag.
       try {
         localStorage.setItem("co:udm14", JSON.stringify(udm.checked));
       } catch (e) {
         /* storage disabled */
       }
+      // Nothing to re-run: this only changes what Google serves on the NEXT
+      // search, so re-answering now would spend credits for no difference.
+      flash("Saved. Applies to your next search.");
+    });
+
+    /* The prompt is a text field, so it gets the two-speed treatment: persist
+       while typing (debounced, so a keystroke is not a storage write), but only
+       re-answer once editing has actually stopped. Re-running per keystroke
+       would bill a query for every pause. */
+    function nextPromptValue() {
+      const typed = promptBox.value.trim();
+      // Store "" for the default so the built-in text stays live rather than
+      // being frozen as a copy the moment the dialog is opened.
+      return !typed || typed === SYSTEM.trim() ? "" : typed;
+    }
+
+    let promptTimer = null;
+    async function savePrompt(rerun) {
+      clearTimeout(promptTimer);
+      const next = nextPromptValue();
+      const changed = next !== ((cur.systemPrompt || "").trim());
+      if (!changed) return;
+      cur.systemPrompt = next;
+      await GM_.set("systemPrompt", next);
+      if (rerun) {
+        // Without force, as above: the prompt hash is in the answer-cache key,
+        // so reverting an edit costs nothing instead of re-billing every column.
+        for (const c of columns) c.run();
+        flash("Saved. Re-answering with the new prompt.");
+      } else {
+        flash("Saved.");
+      }
+    }
+
+    promptBox.addEventListener("input", () => {
+      paintPromptState();
+      clearTimeout(promptTimer);
+      promptTimer = setTimeout(() => savePrompt(false), 700);
+    });
+    // "change" fires on blur only when the value actually differs, which is the
+    // natural "done editing" signal for a textarea.
+    promptBox.addEventListener("change", () => savePrompt(true));
+
+    // Reset writes straight through - it is a decision, not a keystroke.
+    resetPrompt.addEventListener("click", () => savePrompt(true));
+
+    /* Closing must not be able to lose a pending debounce: the dialog can go
+       away by button, backdrop click or Escape, and only the first of those
+       runs anything below. */
+    const flush = () => {
+      if (promptTimer) savePrompt(true);
+    };
+    back.addEventListener("click", (e) => {
+      if (e.target === back) flush();
+    });
+    document.addEventListener("keydown", function onKey(e) {
+      if (e.key !== "Escape") return;
+      if (!host.isConnected) return void document.removeEventListener("keydown", onKey);
+      flush();
+    });
+
+    const done = button("Close", "co-chip", () => {
+      flush();
       close();
     });
-    body.append(done);
+    const closeRow = el("div", "co-histbar");
+    closeRow.append(done, savedNote);
+    body.append(closeRow);
   }
 
   async function openHistory() {
@@ -2744,6 +2832,11 @@
 .co-check{display:flex;align-items:center;gap:8px;font-weight:400}
 .co-check input{width:auto}
 .co-histbar{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+/* Confirmation that an edit was stored. Settings now save on change, so
+   something has to say so - silence would read as "nothing happened". */
+.co-saved{margin-top:0;opacity:0;transition:opacity .15s ease}
+.co-savedon{opacity:.75}
+@media (prefers-reduced-motion:reduce){.co-saved{transition:none}}
 .co-histbar input{flex:1}
 .co-histlist{display:flex;flex-direction:column}
 .co-histrow{border-top:1px solid rgba(128,128,128,.28);padding:12px 0}

@@ -32,7 +32,23 @@ const $ = (id) => document.getElementById(id);
     : "No key saved.";
 })();
 
-$("save").addEventListener("click", async () => {
+/* Settings save on modification rather than on a Save press. A preferences
+   page whose changes vanish unless you find the right button is a trap, and
+   closing the tab is the natural way to leave one.
+
+   The API key is the deliberate exception: it is write-only and only ever
+   overwritten when something was actually typed, so it keeps an explicit
+   button. Saving a secret on every keystroke would persist half-typed keys. */
+const SETTINGS = ["model", "effort", "enabled", "search", "context", "results", "udm14"];
+
+let statusTimer = null;
+function flash(text) {
+  $("status").textContent = text;
+  clearTimeout(statusTimer);
+  statusTimer = setTimeout(() => ($("status").textContent = ""), 1600);
+}
+
+async function persist() {
   await api.storage.sync.set({
     model: $("model").value,
     effort: $("effort").value,
@@ -42,12 +58,20 @@ $("save").addEventListener("click", async () => {
     results: $("results").checked,
     udm14: $("udm14").checked,
   });
-  // Only overwrite the key when a new one was actually typed.
+  flash("Saved");
+}
+
+for (const id of SETTINGS) {
+  // "change" rather than "input": for checkboxes and selects they are the same
+  // moment, and it avoids writing storage on every arrow-key pass through a
+  // select the user is still scrolling.
+  $(id).addEventListener("change", persist);
+}
+
+$("save").addEventListener("click", async () => {
   const typed = $("key").value.trim();
-  if (typed) {
-    await api.storage.local.set({ apiKey: typed });
-    $("key").value = "";
-  }
-  $("status").textContent = "Saved";
-  setTimeout(() => ($("status").textContent = ""), 1600);
+  if (!typed) return void flash("Enter a key first");
+  await api.storage.local.set({ apiKey: typed });
+  $("key").value = ""; // never leave the secret sitting in the DOM
+  flash("Key saved");
 });

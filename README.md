@@ -47,6 +47,11 @@ settings:
 | **↻** | Opens the searchable local history. |
 | Timer chip | Time left on the Anthropic prompt cache (see below). |
 
+Settings save as soon as you change them — there is no Save button to miss, and
+closing the dialog by clicking the backdrop or pressing Escape keeps the change.
+The API key is the one exception: it is write-only and keeps an explicit button,
+because saving a secret on every keystroke would persist half-typed keys.
+
 The **system prompt** is editable in settings (⚙). It is prefilled with the
 default, which is tuned for this slot — short plain prose, no headings, at most
 two inline links — so widen it deliberately. Clearing the box restores the
